@@ -1,0 +1,16 @@
+src/
+tsconfig.json
+tsconfig.*.json
+.github/
+.eslintrc*
+.prettierrc*
+jest.config.*
+vitest.config.*
+*.test.ts
+*.spec.ts
+__tests__/
+coverage/
+.env*
+.vscode/
+node_modules/
+*.tgz

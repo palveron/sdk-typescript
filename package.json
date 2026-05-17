@@ -1,20 +1,25 @@
 {
-  "name": "@vexis-security/sdk",
-  "version": "0.5.0",
-  "description": "Official TypeScript/JavaScript SDK for the VEXIS AI Governance Platform — guardrails, audit trails, blockchain attestation",
+  "name": "@palveron/sdk",
+  "version": "1.0.0",
+  "description": "Official Palveron TypeScript/JavaScript SDK — AI Governance Gateway client for policy enforcement, trace verification, and compliance automation.",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
+      "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs",
-      "require": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "require": "./dist/index.js"
     }
   },
-  "files": ["dist", "README.md", "LICENSE", "CHANGELOG.md"],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
   "scripts": {
-    "build": "tsup src/index.ts --format cjs,esm --dts --clean",
+    "build": "tsup src/index.ts --format cjs,esm --dts --clean --sourcemap",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint src/",
@@ -22,37 +27,45 @@
     "prepublishOnly": "npm run build"
   },
   "keywords": [
+    "palveron",
     "ai-governance",
     "guardrails",
-    "llm-security",
     "eu-ai-act",
     "compliance",
-    "vexis",
-    "ai-safety",
-    "pii-detection",
-    "audit-trail",
+    "llm",
+    "agent-governance",
+    "policy-enforcement",
     "blockchain-attestation",
+    "dora",
+    "gdpr",
+    "nist",
+    "audit-trail",
+    "pii-detection",
     "mcp",
     "agentic-ai"
   ],
-  "author": "VEXIS <sdk@vexis.io>",
-  "license": "Apache-2.0",
+  "author": "Palveron <hello@palveron.com> (https://palveron.com)",
+  "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/disruptivetrends/vexis-sdk-typescript"
+    "url": "https://github.com/palveron/sdk-typescript.git"
   },
-  "homepage": "https://docs.vexis.io/sdk/typescript",
+  "homepage": "https://docs.palveron.com/sdks",
   "bugs": {
-    "url": "https://github.com/disruptivetrends/vexis-sdk-typescript/issues"
+    "url": "https://github.com/palveron/sdk-typescript/issues"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "engines": {
     "node": ">=18"
   },
+  "sideEffects": false,
   "dependencies": {},
   "devDependencies": {
+    "@types/node": "^20.0.0",
     "tsup": "^8.0.0",
     "typescript": "^5.5.0",
-    "vitest": "^2.0.0",
-    "@types/node": "^20.0.0"
+    "vitest": "^2.0.0"
   }
 }

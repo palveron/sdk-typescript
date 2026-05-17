@@ -1,5 +1,5 @@
 // ============================================================
-// @vexis/sdk — Official TypeScript SDK for VEXIS AI Governance
+// @palveron/sdk — Official TypeScript SDK for Palveron AI Governance
 // ============================================================
 // Zero dependencies. Works in Node.js 18+, Deno, Bun, Edge Runtimes.
 // ============================================================
@@ -10,10 +10,10 @@ export type Decision = 'ALLOWED' | 'BLOCKED' | 'MODIFIED' | 'ERROR';
 export type RiskLevel = 'minimal' | 'limited' | 'high' | 'unacceptable';
 export type Sensitivity = 'low' | 'medium' | 'high';
 
-export interface VexisConfig {
-  /** API key (starts with gp_live_ or gp_test_) */
+export interface PalveronConfig {
+  /** API key (starts with pv_live_ or pv_test_) */
   apiKey: string;
-  /** Gateway base URL (default: https://gateway.vexis.io) */
+  /** Gateway base URL (default: https://gateway.palveron.com) */
   baseUrl?: string;
   /** Request timeout in ms (default: 30000) */
   timeout?: number;
@@ -22,7 +22,7 @@ export interface VexisConfig {
   /** Base delay for exponential backoff in ms (default: 500) */
   retryBaseDelay?: number;
   /** Custom logger (default: console) */
-  logger?: VexisLogger;
+  logger?: PalveronLogger;
   /** Custom headers added to every request */
   headers?: Record<string, string>;
   /** Circuit breaker: max consecutive failures before opening (default: 5) */
@@ -31,7 +31,7 @@ export interface VexisConfig {
   circuitBreakerCooldown?: number;
 }
 
-export interface VexisLogger {
+export interface PalveronLogger {
   debug(message: string, meta?: Record<string, unknown>): void;
   info(message: string, meta?: Record<string, unknown>): void;
   warn(message: string, meta?: Record<string, unknown>): void;
@@ -128,7 +128,7 @@ export interface HealthResponse {
 
 // ─── Errors ─────────────────────────────────────────────────
 
-export class VexisError extends Error {
+export class PalveronError extends Error {
   public readonly code: string;
   public readonly statusCode: number;
   public readonly requestId: string | null;
@@ -141,7 +141,7 @@ export class VexisError extends Error {
     retryable?: boolean;
   }) {
     super(message);
-    this.name = 'VexisError';
+    this.name = 'PalveronError';
     this.code = opts.code;
     this.statusCode = opts.statusCode;
     this.requestId = opts.requestId ?? null;
@@ -149,48 +149,48 @@ export class VexisError extends Error {
   }
 }
 
-export class VexisAuthenticationError extends VexisError {
+export class PalveronAuthenticationError extends PalveronError {
   constructor(message: string, requestId?: string | null) {
     super(message, { code: 'AUTHENTICATION_FAILED', statusCode: 401, requestId, retryable: false });
-    this.name = 'VexisAuthenticationError';
+    this.name = 'PalveronAuthenticationError';
   }
 }
 
-export class VexisRateLimitError extends VexisError {
+export class PalveronRateLimitError extends PalveronError {
   public readonly retryAfterMs: number;
 
   constructor(message: string, retryAfterMs: number, requestId?: string | null) {
     super(message, { code: 'RATE_LIMITED', statusCode: 429, requestId, retryable: true });
-    this.name = 'VexisRateLimitError';
+    this.name = 'PalveronRateLimitError';
     this.retryAfterMs = retryAfterMs;
   }
 }
 
-export class VexisValidationError extends VexisError {
+export class PalveronValidationError extends PalveronError {
   public readonly field: string | null;
 
   constructor(message: string, field?: string, requestId?: string | null) {
     super(message, { code: 'VALIDATION_ERROR', statusCode: 400, requestId, retryable: false });
-    this.name = 'VexisValidationError';
+    this.name = 'PalveronValidationError';
     this.field = field ?? null;
   }
 }
 
-export class VexisCircuitOpenError extends VexisError {
+export class PalveronCircuitOpenError extends PalveronError {
   constructor() {
     super('Circuit breaker is open — too many consecutive failures. Retry later.', {
       code: 'CIRCUIT_OPEN', statusCode: 503, retryable: false,
     });
-    this.name = 'VexisCircuitOpenError';
+    this.name = 'PalveronCircuitOpenError';
   }
 }
 
-export class VexisTimeoutError extends VexisError {
+export class PalveronTimeoutError extends PalveronError {
   constructor(timeoutMs: number, requestId?: string | null) {
     super(`Request timed out after ${timeoutMs}ms`, {
       code: 'TIMEOUT', statusCode: 408, requestId, retryable: true,
     });
-    this.name = 'VexisTimeoutError';
+    this.name = 'PalveronTimeoutError';
   }
 }
 
@@ -238,21 +238,21 @@ class CircuitBreaker {
 
 // ─── Client ─────────────────────────────────────────────────
 
-const DEFAULT_BASE_URL = 'https://gateway.vexis.io';
+const DEFAULT_BASE_URL = 'https://gateway.palveron.com';
 const DEFAULT_TIMEOUT = 30_000;
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_RETRY_BASE_DELAY = 500;
-const SDK_VERSION = '0.5.0';
+const SDK_VERSION = '1.0.0';
 
-export class Vexis {
-  private readonly config: Required<Pick<VexisConfig,
+export class Palveron {
+  private readonly config: Required<Pick<PalveronConfig,
     'apiKey' | 'baseUrl' | 'timeout' | 'maxRetries' | 'retryBaseDelay'
-  >> & Pick<VexisConfig, 'logger' | 'headers'>;
+  >> & Pick<PalveronConfig, 'logger' | 'headers'>;
 
   private readonly circuit: CircuitBreaker;
 
-  constructor(config: VexisConfig) {
-    if (!config.apiKey) throw new VexisValidationError('apiKey is required');
+  constructor(config: PalveronConfig) {
+    if (!config.apiKey) throw new PalveronValidationError('apiKey is required');
 
     this.config = {
       apiKey: config.apiKey,
@@ -278,7 +278,7 @@ export class Vexis {
    *
    * @example
    * ```typescript
-   * const result = await vexis.verify({ prompt: 'User input here' });
+   * const result = await palveron.verify({ prompt: 'User input here' });
    * if (result.decision === 'BLOCKED') {
    *   throw new Error(result.reason);
    * }
@@ -330,7 +330,7 @@ export class Vexis {
    *
    * @example
    * ```typescript
-   * const result = await vexis.check('Is this prompt safe?');
+   * const result = await palveron.check('Is this prompt safe?');
    * console.log(result.decision); // 'ALLOWED'
    * ```
    */
@@ -347,7 +347,7 @@ export class Vexis {
    *
    * @example
    * ```typescript
-   * const result = await vexis.verifyWithFile(
+   * const result = await palveron.verifyWithFile(
    *   'Analyze this document',
    *   '/path/to/report.pdf'
    * );
@@ -412,11 +412,11 @@ export class Vexis {
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     if (!this.circuit.canRequest()) {
-      throw new VexisCircuitOpenError();
+      throw new PalveronCircuitOpenError();
     }
 
     let lastError: Error | null = null;
-    const maxAttempts = method === 'GET' ? this.config.maxRetries + 1 : this.config.maxRetries + 1;
+    const maxAttempts = this.config.maxRetries + 1;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       if (attempt > 0) {
@@ -435,7 +435,7 @@ export class Vexis {
           'Authorization': `Bearer ${this.config.apiKey}`,
           'Content-Type': 'application/json',
           'Accept': 'application/json',
-          'User-Agent': `vexis-sdk-typescript/${SDK_VERSION}`,
+          'User-Agent': `palveron-sdk-typescript/${SDK_VERSION}`,
           'X-Request-ID': requestId,
           ...this.config.headers,
         };
@@ -459,7 +459,7 @@ export class Vexis {
         // Handle specific error codes
         if (response.status === 401) {
           this.circuit.onSuccess(); // auth errors are not circuit failures
-          throw new VexisAuthenticationError(
+          throw new PalveronAuthenticationError(
             'Invalid API key or expired token',
             responseRequestId,
           );
@@ -467,7 +467,7 @@ export class Vexis {
 
         if (response.status === 429) {
           const retryAfter = parseInt(response.headers.get('retry-after') ?? '5', 10) * 1000;
-          throw new VexisRateLimitError(
+          throw new PalveronRateLimitError(
             'Rate limit exceeded',
             retryAfter,
             responseRequestId,
@@ -476,7 +476,7 @@ export class Vexis {
 
         if (response.status === 400) {
           const errorBody = await response.json().catch(() => ({})) as Record<string, string>;
-          throw new VexisValidationError(
+          throw new PalveronValidationError(
             errorBody.error ?? 'Invalid request',
             errorBody.field,
             responseRequestId,
@@ -487,7 +487,7 @@ export class Vexis {
         if (response.status >= 500) {
           this.circuit.onFailure();
           const errorBody = await response.text().catch(() => '');
-          lastError = new VexisError(
+          lastError = new PalveronError(
             `Server error: ${response.status} ${response.statusText}`,
             { code: 'SERVER_ERROR', statusCode: response.status, requestId: responseRequestId, retryable: true },
           );
@@ -501,29 +501,29 @@ export class Vexis {
 
         // Non-retryable client errors
         const errorBody = await response.json().catch(() => ({})) as Record<string, string>;
-        throw new VexisError(
+        throw new PalveronError(
           errorBody.error ?? `HTTP ${response.status}`,
           { code: 'CLIENT_ERROR', statusCode: response.status, requestId: responseRequestId, retryable: false },
         );
 
       } catch (error) {
-        if (error instanceof VexisError && !error.retryable) throw error;
+        if (error instanceof PalveronError && !error.retryable) throw error;
 
         if (error instanceof DOMException && error.name === 'AbortError') {
           this.circuit.onFailure();
-          lastError = new VexisTimeoutError(this.config.timeout, requestId);
+          lastError = new PalveronTimeoutError(this.config.timeout, requestId);
           continue;
         }
 
         if (error instanceof TypeError && error.message.includes('fetch')) {
           this.circuit.onFailure();
-          lastError = new VexisError('Network error — could not reach gateway', {
+          lastError = new PalveronError('Network error — could not reach gateway', {
             code: 'NETWORK_ERROR', statusCode: 0, requestId, retryable: true,
           });
           continue;
         }
 
-        if (error instanceof VexisError) {
+        if (error instanceof PalveronError) {
           lastError = error;
           continue;
         }
@@ -532,7 +532,7 @@ export class Vexis {
       }
     }
 
-    throw lastError ?? new VexisError('Max retries exceeded', {
+    throw lastError ?? new PalveronError('Max retries exceeded', {
       code: 'MAX_RETRIES', statusCode: 0, retryable: false,
     });
   }
@@ -552,7 +552,7 @@ export class Vexis {
   private generateRequestId(): string {
     const ts = Date.now().toString(36);
     const rand = Math.random().toString(36).slice(2, 8);
-    return `vx_${ts}_${rand}`;
+    return `pv_${ts}_${rand}`;
   }
 
   private inferMimeType(filename: string): string {
@@ -573,24 +573,24 @@ export class Vexis {
 // ─── Factory ──────────────────────────────────────────────
 
 /**
- * Create a VEXIS client instance.
+ * Create a Palveron client instance.
  *
  * @example
  * ```typescript
- * import { createClient } from '@vexis/sdk';
+ * import { createClient } from '@palveron/sdk';
  *
- * const vexis = createClient({
- *   apiKey: process.env.VEXIS_API_KEY!,
+ * const palveron = createClient({
+ *   apiKey: process.env.PALVERON_API_KEY!,
  *   baseUrl: 'https://gateway.acme.corp:8080', // on-prem
  * });
  *
- * const result = await vexis.verify({ prompt: userInput });
+ * const result = await palveron.verify({ prompt: userInput });
  * ```
  */
-export function createClient(config: VexisConfig): Vexis {
-  return new Vexis(config);
+export function createClient(config: PalveronConfig): Palveron {
+  return new Palveron(config);
 }
 
 // ─── Re-exports ─────────────────────────────────────────
 
-export default Vexis;
+export default Palveron;
