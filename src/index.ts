@@ -53,6 +53,21 @@ export interface PalveronConfig {
   circuitBreakerThreshold?: number;
   /** Circuit breaker: cooldown in ms before half-open retry (default: 30000) */
   circuitBreakerCooldown?: number;
+  /**
+   * `verifyAndAwaitDecision()` only — interval between approval-status polls,
+   * in ms (default: 3000). Ignored by `verify()`.
+   */
+  approvalPollIntervalMs?: number;
+  /**
+   * `verifyAndAwaitDecision()` only — client-side cap on how long to wait for a
+   * held approval to be decided, in ms (default: 300000 = 5 min). This is
+   * DELIBERATELY shorter than the server-side hold timeout (`defaultTimeout`,
+   * 1440 min): a headless caller does not block for 24h. When the cap elapses
+   * the method returns fail-closed `BLOCKED`; the hold itself lives on
+   * server-side and is still decidable by a human or the expiry worker — the
+   * client has merely stopped waiting. Ignored by `verify()`.
+   */
+  approvalPollTimeoutMs?: number;
 }
 
 export interface PalveronLogger {
@@ -137,6 +152,58 @@ export interface VerifyResponse {
   retryAfterMs?: number;
   /** HTTP status code that produced this response (200, 202, 403, 429). */
   httpStatus?: number;
+  /**
+   * Decision-trace id of the approval *decision* (Goal B2/C-b), populated ONLY
+   * by `verifyAndAwaitDecision()` once a held call resolves (APPROVED/DENIED).
+   * Distinct from `traceId` (the original held request). `undefined` for a plain
+   * `verify()` and while still PENDING.
+   */
+  decisionTraceId?: string;
+}
+
+/**
+ * Approval status for a held (`PENDING_APPROVAL`) trace, as returned by
+ * `GET /api/v1/approvals/status` (Goal C-c). Field names mirror the gateway
+ * JSON exactly (snake_case) — see `handlers/agents.rs::get_approval_status`.
+ */
+export interface ApprovalStatusResponse {
+  /** Original held request's trace id. */
+  trace_id: string | null;
+  /** Approval (ApprovalChain) row id. */
+  approval_id: string | null;
+  /** Raw ApprovalChain.status (PENDING/APPROVED/DENIED). */
+  status: string;
+  /** Client-facing effective status — the field the resume loop branches on. */
+  effective_status: 'APPROVED' | 'DENIED' | 'EXPIRED' | 'PENDING';
+  /** Decider: email, the literal "system" marker, or null while pending. */
+  decided_by: string | null;
+  decided_by_name?: string | null;
+  /** ISO timestamp of the decision, or null while pending. */
+  decided_at: string | null;
+  /** Decision-trace id (B2), or null. */
+  decision_trace_id: string | null;
+  /** On-chain anchor status of the decision trace (ANCHORED/PENDING/FAILED/null). */
+  anchor_status: string | null;
+  /** Derived expiry instant (createdAt + defaultTimeout). */
+  expires_at: string | null;
+  /** True when EXPIRED is a read-time derivation (worker hasn't flipped yet). */
+  expired_derived: boolean;
+  /** True when the hold was auto-denied by the expiry worker (Goal C-b). */
+  auto_expired?: boolean;
+}
+
+/** Options for `verifyAndAwaitDecision()`. */
+export interface AwaitDecisionOptions {
+  /** Override `PalveronConfig.approvalPollIntervalMs` for this call. */
+  pollIntervalMs?: number;
+  /** Override `PalveronConfig.approvalPollTimeoutMs` (client cap) for this call. */
+  pollTimeoutMs?: number;
+  /**
+   * Abort the polling wait early. Checked between polls — a plain `verify()` is
+   * already in flight by then, so this cancels the *waiting*, returning
+   * fail-closed `BLOCKED`. The server-side hold is unaffected.
+   */
+  signal?: AbortSignal;
 }
 
 export interface PolicyListResponse {
@@ -274,11 +341,14 @@ const DEFAULT_BASE_URL = 'https://gateway.palveron.com';
 const DEFAULT_TIMEOUT = 30_000;
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_RETRY_BASE_DELAY = 500;
+const DEFAULT_APPROVAL_POLL_INTERVAL = 3_000;
+const DEFAULT_APPROVAL_POLL_TIMEOUT = 300_000; // 5 min client cap (≠ hold timeout)
 const SDK_VERSION = '1.1.0';
 
 export class Palveron {
   private readonly config: Required<Pick<PalveronConfig,
     'apiKey' | 'baseUrl' | 'timeout' | 'maxRetries' | 'retryBaseDelay'
+    | 'approvalPollIntervalMs' | 'approvalPollTimeoutMs'
   >> & Pick<PalveronConfig, 'logger' | 'headers'>;
 
   private readonly circuit: CircuitBreaker;
@@ -292,6 +362,8 @@ export class Palveron {
       timeout: config.timeout ?? DEFAULT_TIMEOUT,
       maxRetries: config.maxRetries ?? DEFAULT_MAX_RETRIES,
       retryBaseDelay: config.retryBaseDelay ?? DEFAULT_RETRY_BASE_DELAY,
+      approvalPollIntervalMs: config.approvalPollIntervalMs ?? DEFAULT_APPROVAL_POLL_INTERVAL,
+      approvalPollTimeoutMs: config.approvalPollTimeoutMs ?? DEFAULT_APPROVAL_POLL_TIMEOUT,
       logger: config.logger,
       headers: config.headers,
     };
@@ -382,6 +454,132 @@ export class Palveron {
     if (status === 202) return 'PENDING_APPROVAL';
     if (status >= 200 && status < 300) return 'PASSED';
     return 'ERROR';
+  }
+
+  // ── Approval resume (Goal C-a) ──────────────────────────
+
+  /**
+   * Fetch the live approval status for a held trace (Goal C-c endpoint).
+   * Useful on its own for building a custom wait loop; `verifyAndAwaitDecision`
+   * is the batteries-included path. Throws `PalveronError` on transport/HTTP
+   * errors (e.g. a 404 right after the 202, before the hold row is queryable).
+   */
+  async getApprovalStatus(traceId: string): Promise<ApprovalStatusResponse> {
+    const { body } = await this.request<ApprovalStatusResponse>(
+      'GET',
+      `/api/v1/approvals/status?trace_id=${encodeURIComponent(traceId)}`,
+    );
+    return body;
+  }
+
+  /**
+   * Verify, and if the result is held for human approval
+   * (`PENDING_APPROVAL`), poll the approval-status endpoint until the hold is
+   * decided — then resume with a resolved decision. Opt-in: `verify()` is
+   * unchanged, and any non-held result returns immediately without polling.
+   *
+   * **Fail-closed contract** — ONLY an explicit `APPROVED` resumes:
+   *
+   * | effective_status / outcome        | returned `decision` |
+   * |-----------------------------------|---------------------|
+   * | `APPROVED`                        | `'PASSED'`          |
+   * | `DENIED`                          | `'BLOCKED'`         |
+   * | `EXPIRED` / `auto_expired`        | `'BLOCKED'`         |
+   * | poll cap reached (still pending)  | `'BLOCKED'`         |
+   * | status error / 404 / network      | (keep polling → `'BLOCKED'` at cap) |
+   *
+   * `'PASSED'` is the canonical allow value a fresh `verify()` returns, so a
+   * resumed call is indistinguishable from a normal pass to the caller.
+   *
+   * The client cap (`approvalPollTimeoutMs`, default 5 min) is intentionally
+   * shorter than the server-side hold timeout (24h): hitting it returns
+   * `BLOCKED` while the hold lives on server-side, decidable later by a human
+   * or the expiry worker. DENIED/EXPIRED are valid governance outcomes, NOT
+   * errors — this never throws for them.
+   *
+   * @example
+   * ```typescript
+   * const res = await palveron.verifyAndAwaitDecision({ prompt: 'rm -rf /' });
+   * if (res.decision === 'PASSED') runTool();      // approved
+   * else console.warn('held call not allowed:', res.reason);
+   * ```
+   */
+  async verifyAndAwaitDecision(
+    request: VerifyRequest,
+    opts?: AwaitDecisionOptions,
+  ): Promise<VerifyResponse> {
+    const res = await this.verify(request);
+
+    // Not held → return verbatim, no polling (PASSED/BLOCKED/MODIFIED/…).
+    if (res.decision !== 'PENDING_APPROVAL') return res;
+
+    const intervalMs = opts?.pollIntervalMs ?? this.config.approvalPollIntervalMs;
+    const timeoutMs = opts?.pollTimeoutMs ?? this.config.approvalPollTimeoutMs;
+    const { signal } = opts ?? {};
+
+    // No traceId → nothing to poll. Fail-closed.
+    if (!res.traceId) {
+      return { ...res, decision: 'BLOCKED', reason: 'No traceId available to poll approval status' };
+    }
+
+    const blocked = (reason: string, decisionTraceId?: string | null): VerifyResponse => ({
+      ...res,
+      decision: 'BLOCKED',
+      reason,
+      ...(decisionTraceId ? { decisionTraceId } : {}),
+    });
+
+    const deadline = Date.now() + timeoutMs;
+
+    while (Date.now() < deadline) {
+      if (signal?.aborted) return blocked('Approval polling aborted by caller');
+
+      // Wait one interval before (re)checking — the hold was just created; this
+      // also bounds the loop to one status call per interval (no busy-loop).
+      await this.sleep(intervalMs);
+
+      if (signal?.aborted) return blocked('Approval polling aborted by caller');
+
+      let status: ApprovalStatusResponse;
+      try {
+        status = await this.getApprovalStatus(res.traceId);
+      } catch (err) {
+        // 404 right after the 202 (row not yet queryable), transient network,
+        // or an open circuit — none are terminal. Keep polling until the cap.
+        this.config.logger?.debug('Approval status poll failed — retrying until cap', {
+          traceId: res.traceId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        continue;
+      }
+
+      switch (status.effective_status) {
+        case 'APPROVED':
+          return {
+            ...res,
+            decision: 'PASSED',
+            reason: status.decided_by ? `Approval granted by ${status.decided_by}` : 'Approval granted',
+            ...(status.decision_trace_id ? { decisionTraceId: status.decision_trace_id } : {}),
+          };
+        case 'DENIED':
+          // Auto-expiry (Goal C-b) surfaces as DENIED + auto_expired; label it honestly.
+          return blocked(
+            status.auto_expired
+              ? 'Approval auto-expired (timed out)'
+              : status.decided_by ? `Approval denied by ${status.decided_by}` : 'Approval denied',
+            status.decision_trace_id,
+          );
+        case 'EXPIRED':
+          return blocked('Approval expired (timed out)', status.decision_trace_id);
+        default:
+          // PENDING (or any unexpected value) → keep waiting, fail-closed at cap.
+          break;
+      }
+    }
+
+    return blocked(
+      `Approval poll timed out after ${timeoutMs}ms — the hold remains pending server-side and may still be decided`,
+    );
   }
 
   // ── Convenience: Quick verify (string-only) ─────────────
