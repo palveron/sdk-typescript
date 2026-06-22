@@ -35,7 +35,7 @@ export type RiskLevel = 'minimal' | 'limited' | 'high' | 'unacceptable';
 export type Sensitivity = 'low' | 'medium' | 'high';
 
 export interface PalveronConfig {
-  /** API key (starts with pv_live_ or pv_test_) */
+  /** API key (starts with pv_live_) */
   apiKey: string;
   /** Gateway base URL (default: https://gateway.palveron.com) */
   baseUrl?: string;

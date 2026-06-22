@@ -64,7 +64,7 @@ function installFetch(verifyRes: MockResponse, statusQueue: MockResponse[]): Ret
 
 function client(over: Record<string, unknown> = {}) {
   return new Palveron({
-    apiKey: 'pv_test_abc',
+    apiKey: 'pv_live_abc',
     approvalPollIntervalMs: 1,
     approvalPollTimeoutMs: 1000,
     ...over,
