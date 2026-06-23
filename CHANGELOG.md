@@ -4,6 +4,24 @@ All notable changes to `@palveron/sdk` will be documented in this file.
 
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] — 2026-06-23
+
+### Changed
+- `PalveronError` now preserves the original underlying error on the standard
+  `Error.cause` when a request fails with `NETWORK_ERROR`. Previously a transport
+  failure (`TypeError: fetch failed`) was caught and re-thrown as a generic
+  `PalveronError('NETWORK_ERROR')` that **discarded** the real reason. The real
+  undici reason now remains reachable via `err.cause.cause.code`
+  (`UNABLE_TO_VERIFY_LEAF_SIGNATURE`, `CERT_HAS_EXPIRED`, `ECONNREFUSED`,
+  `ENOTFOUND`, …) so consumers and adapters can detect TLS-interception /
+  transport root causes instead of seeing an opaque network error.
+
+### Migration
+- Purely additive: `code`, `statusCode`, `retryable` and decision flow are
+  unchanged. Existing handlers keep working. New: inspect `err.cause` (the
+  original `TypeError`) and `err.cause.cause.code` (the low-level reason) for
+  richer diagnostics.
+
 ## [1.1.0] — 2026-05-19
 
 ### Changed

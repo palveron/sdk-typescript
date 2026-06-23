@@ -238,8 +238,16 @@ export class PalveronError extends Error {
     statusCode: number;
     requestId?: string | null;
     retryable?: boolean;
+    /**
+     * The original underlying error (e.g. the `TypeError: fetch failed` whose
+     * own `.cause` carries the real undici reason: ENOTFOUND, ECONNREFUSED,
+     * UNABLE_TO_VERIFY_LEAF_SIGNATURE, …). Preserved on the standard
+     * `Error.cause` so callers/adapters can diagnose transport failures that
+     * would otherwise be masked behind a generic NETWORK_ERROR.
+     */
+    cause?: unknown;
   }) {
-    super(message);
+    super(message, opts.cause !== undefined ? { cause: opts.cause } : undefined);
     this.name = 'PalveronError';
     this.code = opts.code;
     this.statusCode = opts.statusCode;
@@ -826,7 +834,11 @@ export class Palveron {
         if (error instanceof TypeError && error.message.includes('fetch')) {
           this.circuit.onFailure();
           lastError = new PalveronError('Network error — could not reach gateway', {
-            code: 'NETWORK_ERROR', statusCode: 0, requestId, retryable: true,
+            // Preserve the original `TypeError: fetch failed` (and via its own
+            // `.cause` the real undici reason) so adapters can distinguish DNS /
+            // connect / TLS-trust / egress failures instead of seeing a generic
+            // NETWORK_ERROR. Behaviour (code/retryable/decision) is unchanged.
+            code: 'NETWORK_ERROR', statusCode: 0, requestId, retryable: true, cause: error,
           });
           continue;
         }
