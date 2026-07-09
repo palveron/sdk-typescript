@@ -232,12 +232,22 @@ export class PalveronError extends Error {
   public readonly statusCode: number;
   public readonly requestId: string | null;
   public readonly retryable: boolean;
+  /**
+   * The gateway's stable, snake_case taxonomy code from the structured error
+   * contract (`{ error: { code, message, request_id } }`, B1a+), e.g.
+   * `validation_error` / `forbidden` / `rate_limited`. Distinct from `code`
+   * above, which is the SDK-side category (`CLIENT_ERROR`, `VALIDATION_ERROR`, …).
+   * `null` when the server sent the legacy flat-string body or no parseable body.
+   */
+  public readonly serverCode: string | null;
 
   constructor(message: string, opts: {
     code: string;
     statusCode: number;
     requestId?: string | null;
     retryable?: boolean;
+    /** Gateway taxonomy code (structured contract) — additive, optional. */
+    serverCode?: string | null;
     /**
      * The original underlying error (e.g. the `TypeError: fetch failed` whose
      * own `.cause` carries the real undici reason: ENOTFOUND, ECONNREFUSED,
@@ -253,6 +263,7 @@ export class PalveronError extends Error {
     this.statusCode = opts.statusCode;
     this.requestId = opts.requestId ?? null;
     this.retryable = opts.retryable ?? false;
+    this.serverCode = opts.serverCode ?? null;
   }
 }
 
@@ -299,6 +310,45 @@ export class PalveronTimeoutError extends PalveronError {
     });
     this.name = 'PalveronTimeoutError';
   }
+}
+
+// ─── Error-body parsing (tolerant of both contract shapes) ──
+
+interface ParsedErrorBody {
+  message: string | null;
+  code: string | null;
+  requestId: string | null;
+  field: string | null;
+}
+
+/**
+ * Extract `{ message, code, requestId, field }` from a gateway error body,
+ * tolerant of BOTH contract shapes so a caller never sees `[object Object]`
+ * or an empty message:
+ *   - NEW (B1a+): `{ error: { code, message, request_id } }` — `error` is an object.
+ *   - LEGACY:     `{ error: "<message>" }` — `error` is a flat string.
+ *   - Fallback:   top-level `message` string.
+ * Defensive: null / non-object / arrays / missing fields → all-null, never throws.
+ */
+function parseErrorBody(body: unknown): ParsedErrorBody {
+  const out: ParsedErrorBody = { message: null, code: null, requestId: null, field: null };
+  if (body === null || typeof body !== 'object') return out;
+  const b = body as Record<string, unknown>;
+  const err = b.error;
+  if (err !== null && typeof err === 'object' && !Array.isArray(err)) {
+    const e = err as Record<string, unknown>;
+    out.message = typeof e.message === 'string' ? e.message
+      : typeof b.message === 'string' ? b.message : null;
+    out.code = typeof e.code === 'string' ? e.code : null;
+    out.requestId = typeof e.request_id === 'string' ? e.request_id : null;
+  } else if (typeof err === 'string') {
+    out.message = err;
+  } else if (typeof b.message === 'string') {
+    out.message = b.message;
+  }
+  // Legacy top-level `field` on validation errors (absent in the new contract).
+  if (typeof b.field === 'string') out.field = b.field;
+  return out;
 }
 
 // ─── Circuit Breaker ────────────────────────────────────────
@@ -791,10 +841,11 @@ export class Palveron {
         }
 
         if (response.status === 400) {
-          const errorBody = await response.json().catch(() => ({})) as Record<string, string>;
+          const errorBody = await response.json().catch(() => null);
+          const parsed = parseErrorBody(errorBody);
           throw new PalveronValidationError(
-            errorBody.error ?? 'Invalid request',
-            errorBody.field,
+            parsed.message ?? 'Invalid request',
+            parsed.field ?? undefined,
             responseRequestId,
           );
         }
@@ -816,10 +867,17 @@ export class Palveron {
         }
 
         // Non-retryable client errors
-        const errorBody = await response.json().catch(() => ({})) as Record<string, string>;
+        const errorBody = await response.json().catch(() => null);
+        const parsed = parseErrorBody(errorBody);
         throw new PalveronError(
-          errorBody.error ?? `HTTP ${response.status}`,
-          { code: 'CLIENT_ERROR', statusCode: response.status, requestId: responseRequestId, retryable: false },
+          parsed.message ?? `HTTP ${response.status}`,
+          {
+            code: 'CLIENT_ERROR',
+            statusCode: response.status,
+            requestId: responseRequestId,
+            retryable: false,
+            serverCode: parsed.code,
+          },
         );
 
       } catch (error) {
